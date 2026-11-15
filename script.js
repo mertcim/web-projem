@@ -142,59 +142,129 @@ document.addEventListener('DOMContentLoaded', () => {
         try { audio.currentTime = START_TIME; } catch (e) {}
     };
 
-    // --- BUTON MERKEZE DÖNÜŞ ---
-    const returnToCenter = () => {
-        const centerX = window.innerWidth / 2;
-        const centerY = window.innerHeight / 2;
+    // --- GİRİŞ PERDESİ ---
+    // Tarayıcılar sesi ancak gerçek bir kullanıcı tıklamasından sonra çalmaya izin veriyor.
+    // Sayfa ilk açıldığında bu soruyu sorup o tıklamayla ses kilidini açıyoruz.
+    const gate = document.getElementById('introGate');
+    let gateOpen = !!gate;
 
-        const distFromCenter = Math.hypot(centerX - currentMousePos.x, centerY - currentMousePos.y);
-        if (distFromCenter > DANGER_RADIUS) {
-            btn.style.left = '50%';
-            btn.style.top = '50%';
+    const closeGate = () => {
+        if (!gateOpen) return;
+        gateOpen = false;
 
-            isEvading = false;
+        // Kilidi aç: tıklama anında sessizce çal-durdur, böylece ilk kaçışta şarkı anında başlar
+        if (audio) {
+            audio.muted = true;
+            const p = audio.play();
+            const reset = () => {
+                audio.pause();
+                try { audio.currentTime = START_TIME; } catch (e) {}
+                audio.muted = false;
+            };
+            if (p !== undefined) p.then(reset).catch(reset); else reset();
+        }
+
+        gate.classList.add('hidden');
+        document.body.classList.remove('gated');
+        setTimeout(() => gate.remove(), 500);
+    };
+
+    if (gate) {
+        gate.querySelectorAll('.gate-btn').forEach(b => b.addEventListener('click', closeGate));
+    }
+
+    // --- BUTONLAR (mitoz: her başarılı tık butonu ikiye böler) ---
+    // Bırakılınca tüm kopyalar ortada tek butonda birleşir.
+    const MAX_BUTTONS = 64;      // performans için üst sınır
+    const SPLIT_OFFSET = 70;     // bölünmede yavru hücrelerin merkezden uzaklığı
+    const SPLIT_PAUSE = 450;     // bölünme görünsün diye kaçışın beklediği süre (ms)
+    const cells = [];            // { el, evading } — cells[0] her zaman asıl buton
+    let pauseEvadeUntil = 0;
+
+    const centerOf = (el) => {
+        const r = el.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    };
+
+    const bounds = (el) => {
+        const r = el.getBoundingClientRect();
+        const minX = PADDING + r.width / 2;
+        const minY = PADDING + r.height / 2;
+        return {
+            minX, minY,
+            maxX: Math.max(minX, window.innerWidth - PADDING - r.width / 2),
+            maxY: Math.max(minY, window.innerHeight - PADDING - r.height / 2)
+        };
+    };
+
+    const placeAt = (c, x, y) => {
+        c.el.style.left = `${x}px`;
+        c.el.style.top = `${y}px`;
+    };
+
+    // Herhangi bir buton kaçıyorsa müzik + renk animasyonu açık, hepsi yuvadaysa kapalı
+    const updateEvadingState = () => {
+        const any = cells.some(c => c.evading);
+        if (any === isEvading) return;
+        isEvading = any;
+        if (isEvading) {
+            document.body.classList.add('evading');
+            playMusic();
+        } else {
             document.body.classList.remove('evading');
             stopMusic();
-            stopGifSpawner(); // Buton yerine döndüğünde gifleri temizle
-        } else {
-            scheduleReturn();
+            stopGifSpawner();
         }
     };
 
-    const scheduleReturn = () => {
-        clearTimeout(returnTimeout);
-        returnTimeout = setTimeout(returnToCenter, RESET_DELAY);
+    // Bırakıldığında: tüm kopyalar ortaya akıp kaybolur, tek buton ortada kalır, şarkı durur
+    const collapseAll = () => {
+        const origin = cells[0];
+        const cx = window.innerWidth / 2;
+        const cy = window.innerHeight / 2;
+
+        cells.slice(1).forEach(c => {
+            c.el.classList.add('merging');
+            placeAt(c, cx, cy);
+            setTimeout(() => c.el.remove(), 450);
+        });
+        cells.length = 1;
+
+        origin.el.style.left = '50%';
+        origin.el.style.top = '50%';
+        origin.evading = false;
+        updateEvadingState();
     };
 
-    // --- BUTON KAÇIŞI ---
-    const runAway = (mouseX, mouseY) => {
-        isEvading = true;
-        document.body.classList.add('evading');
-        playMusic();
+    // Tek ortak sayaç: fare RESET_DELAY boyunca ortadan uzak kalırsa birleştir
+    let returnTimer = null;
+    const scheduleReturn = () => {
+        clearTimeout(returnTimer);
+        returnTimer = setTimeout(() => {
+            const dist = Math.hypot(window.innerWidth / 2 - currentMousePos.x, window.innerHeight / 2 - currentMousePos.y);
+            if (dist > DANGER_RADIUS) collapseAll();
+            else scheduleReturn();
+        }, RESET_DELAY);
+    };
 
-        const rect = btn.getBoundingClientRect();
-        const btnCenterX = rect.left + rect.width / 2;
-        const btnCenterY = rect.top + rect.height / 2;
+    const runAway = (c, mouseX, mouseY) => {
+        c.evading = true;
+        updateEvadingState();
 
-        const deltaX = btnCenterX - mouseX;
-        const deltaY = btnCenterY - mouseY;
-        const distance = Math.hypot(deltaX, deltaY);
-
-        const minX = PADDING + rect.width / 2;
-        const maxX = window.innerWidth - PADDING - rect.width / 2;
-        const minY = PADDING + rect.height / 2;
-        const maxY = window.innerHeight - PADDING - rect.height / 2;
-
+        const { x: cx, y: cy } = centerOf(c.el);
+        const { minX, maxX, minY, maxY } = bounds(c.el);
+        const deltaX = cx - mouseX;
+        const deltaY = cy - mouseY;
         const jumpDistance = 170 + Math.random() * 90;
         let newX, newY;
 
-        if (distance === 0) {
-            newX = btnCenterX + (Math.random() - 0.5) * jumpDistance * 2;
-            newY = btnCenterY + (Math.random() - 0.5) * jumpDistance * 2;
+        if (deltaX === 0 && deltaY === 0) {
+            newX = cx + (Math.random() - 0.5) * jumpDistance * 2;
+            newY = cy + (Math.random() - 0.5) * jumpDistance * 2;
         } else {
             const angle = Math.atan2(deltaY, deltaX);
-            newX = btnCenterX + Math.cos(angle) * jumpDistance;
-            newY = btnCenterY + Math.sin(angle) * jumpDistance;
+            newX = cx + Math.cos(angle) * jumpDistance;
+            newY = cy + Math.sin(angle) * jumpDistance;
         }
 
         if (newX < minX || newX > maxX || newY < minY || newY > maxY) {
@@ -202,15 +272,88 @@ document.addEventListener('DOMContentLoaded', () => {
             newY = minY + Math.random() * (maxY - minY);
         }
 
-        btn.style.left = `${newX}px`;
-        btn.style.top = `${newY}px`;
-
+        placeAt(c, newX, newY);
         scheduleReturn();
     };
+
+    const evadeNear = (x, y) => {
+        cells.forEach(c => {
+            const p = centerOf(c.el);
+            if (Math.hypot(p.x - x, p.y - y) < DANGER_RADIUS) runAway(c, x, y);
+        });
+    };
+
+    const playDivideAnim = (el) => {
+        el.classList.remove('dividing');
+        void el.offsetWidth; // animasyonu yeniden başlat
+        el.classList.add('dividing');
+    };
+
+    // Butonu ikiye böl: kendisi ve yeni kopyası zıt yönlere ayrılır
+    const divide = (c) => {
+        const { x: cx, y: cy } = centerOf(c.el);
+        const { minX, maxX, minY, maxY } = bounds(c.el);
+        const clamp = (x, y) => ({
+            x: Math.min(Math.max(x, minX), maxX),
+            y: Math.min(Math.max(y, minY), maxY)
+        });
+
+        const angle = Math.random() * Math.PI * 2;
+        const dx = Math.cos(angle) * SPLIT_OFFSET;
+        const dy = Math.sin(angle) * SPLIT_OFFSET;
+        const a = clamp(cx - dx, cy - dy);
+        const b = clamp(cx + dx, cy + dy);
+
+        playDivideAnim(c.el);
+        placeAt(c, cx, cy);
+        requestAnimationFrame(() => placeAt(c, a.x, a.y));
+
+        if (cells.length >= MAX_BUTTONS) return;
+
+        const el = c.el.cloneNode(true);
+        el.removeAttribute('id');
+        el.style.left = `${cx}px`;
+        el.style.top = `${cy}px`;
+        btn.parentNode.appendChild(el);
+        playDivideAnim(el);
+
+        const child = { el, evading: c.evading };
+        addCell(child);
+        requestAnimationFrame(() => requestAnimationFrame(() => placeAt(child, b.x, b.y)));
+    };
+
+    const addCell = (c) => {
+        cells.push(c);
+
+        c.el.addEventListener('mouseenter', (e) => {
+            if (gateOpen || performance.now() < pauseEvadeUntil) return;
+            runAway(c, e.clientX, e.clientY);
+        });
+
+        c.el.addEventListener('animationend', () => c.el.classList.remove('dividing'));
+
+        c.el.addEventListener('click', () => {
+            c.el.textContent = "Hile Yaptın!";
+            setTimeout(() => { c.el.textContent = "Tıklama!"; }, 1200);
+            divide(c);
+            // Bölünme görüldükten sonra yakındaki hücreler kaçmaya devam etsin
+            setTimeout(() => evadeNear(currentMousePos.x, currentMousePos.y), SPLIT_PAUSE);
+        });
+    };
+
+    addCell({ el: btn, evading: false });
+
+    // Tıklama anında kaçış kısa süre dursun ki mitoz görünsün
+    window.addEventListener('pointerdown', (e) => {
+        if (e.target.closest && e.target.closest('.fade-btn')) {
+            pauseEvadeUntil = performance.now() + SPLIT_PAUSE;
+        }
+    });
 
     // --- FARE HAREKETLERİ ---
     window.addEventListener('mousemove', (e) => {
         currentMousePos = { x: e.clientX, y: e.clientY };
+        if (gateOpen) return; // Perde açıkken hiçbir şey başlamasın
 
         // 1. Fare hareket edince gifleri başlat
         startGifSpawner();
@@ -221,30 +364,14 @@ document.addEventListener('DOMContentLoaded', () => {
             stopGifSpawner();
         }, 650);
 
-        // 3. Buton kaçış kontrolü
-        const rect = btn.getBoundingClientRect();
-        const btnCenterX = rect.left + rect.width / 2;
-        const btnCenterY = rect.top + rect.height / 2;
-        const dist = Math.hypot(btnCenterX - e.clientX, btnCenterY - e.clientY);
-
-        if (dist < DANGER_RADIUS) {
-            runAway(e.clientX, e.clientY);
-        }
-    });
-
-    btn.addEventListener('mouseenter', (e) => {
-        runAway(e.clientX, e.clientY);
+        // 3. Buton kaçış kontrolü (her hücre için)
+        if (performance.now() < pauseEvadeUntil) return;
+        evadeNear(e.clientX, e.clientY);
     });
 
     window.addEventListener('mouseleave', () => {
         currentMousePos = { x: -9999, y: -9999 };
         stopGifSpawner();
         scheduleReturn();
-    });
-
-    btn.addEventListener('click', (e) => {
-        btn.textContent = "Hile Yaptın!";
-        setTimeout(() => { btn.textContent = "Tıklama!"; }, 1200);
-        runAway(e.clientX, e.clientY);
     });
 });
